@@ -74,6 +74,16 @@ mkcol() {
         "${WEBDAV_ROOT}/$1"
 }
 
+ensure_extras_folder() {
+    local DEVICE_PATH="$1"
+    local EXTRAS_PATH="${DEVICE_PATH}/extras"
+
+    if [[ "$(propfind_status "$EXTRAS_PATH")" == "404" ]]; then
+        mkcol "$EXTRAS_PATH"
+        echo "[OK] Created extras folder: ${EXTRAS_PATH}"
+    fi
+}
+
 list_dir() {
     echo ""
     echo "📂 Listing: $1"
@@ -145,15 +155,32 @@ upload_file() {
     fi
 
     DEVICE_PATH="${ANDROID_PATH}/${DEVICE}"
-    [[ "$(propfind_status "$DEVICE_PATH")" == "404" ]] && mkcol "$DEVICE_PATH"
+
+    if [[ "$(propfind_status "$DEVICE_PATH")" == "404" ]]; then
+        mkcol "$DEVICE_PATH"
+        echo "[OK] Created device folder: ${DEVICE_PATH}"
+        ensure_extras_folder "$DEVICE_PATH"
+    fi
+
+    echo ""
+    echo "Upload type:"
+    echo "  1) ROM (default)"
+    echo "  2) Extras"
+    read -rp "Choice [1/2]: " TYPE
+
+    if [[ "$TYPE" == "2" ]]; then
+        TARGET_PATH="${DEVICE_PATH}/extras"
+    else
+        TARGET_PATH="${DEVICE_PATH}"
+    fi
 
     FILENAME="$(basename "$FILE")"
-    TARGET="${WEBDAV_ROOT}/${DEVICE_PATH}/${FILENAME}"
+    TARGET="${WEBDAV_ROOT}/${TARGET_PATH}/${FILENAME}"
 
     echo ""
     echo "🚀 Uploading:"
     echo "   File   : $FILENAME"
-    echo "   Path   : ${DEVICE_PATH}"
+    echo "   Path   : ${TARGET_PATH}"
     echo "─────────────────────────────────────────"
 
     HTTP=$(curl -s -# \
@@ -168,15 +195,15 @@ upload_file() {
 
     if [[ "$HTTP" == "201" || "$HTTP" == "204" ]]; then
         echo "✅ Upload successful"
-        log_action "UPLOAD" "${DEVICE_PATH}/${FILENAME}" "SUCCESS"
+        log_action "UPLOAD" "${TARGET_PATH}/${FILENAME}" "SUCCESS"
     else
         echo "❌ Upload failed"
-        log_action "UPLOAD" "${DEVICE_PATH}/${FILENAME}" "FAILED ($HTTP)"
+        log_action "UPLOAD" "${TARGET_PATH}/${FILENAME}" "FAILED ($HTTP)"
     fi
 
     echo ""
     echo "📁 View:"
-    echo "${NC_URL}/apps/files/?dir=/${DEVICE_PATH}"
+    echo "${NC_URL}/apps/files/?dir=/${TARGET_PATH}"
     echo ""
 }
 
@@ -192,11 +219,19 @@ case "$CMD" in
         ;;
     delete)
         shift
-        delete_file "${BASE_DIR}/$1/$2/$3"
+        if [[ "$1" == "extras" ]]; then
+            delete_file "${BASE_DIR}/$2/$3/extras/$4"
+        else
+            delete_file "${BASE_DIR}/$1/$2/$3"
+        fi
         ;;
     list)
         shift
-        list_dir "${BASE_DIR}/$1/$2"
+        if [[ "$1" == "extras" ]]; then
+            list_dir "${BASE_DIR}/$2/$3/extras"
+        else
+            list_dir "${BASE_DIR}/$1/$2"
+        fi
         ;;
     *)
         echo "Matrixx-OS CLI Usage:"
@@ -206,9 +241,11 @@ case "$CMD" in
         echo ""
         echo "  List:"
         echo "    ./nc.sh list A16 device"
+        echo "    ./nc.sh list extras A16 device"
         echo ""
         echo "  Delete:"
         echo "    ./nc.sh delete A16 device file.zip"
+        echo "    ./nc.sh delete extras A16 device file.zip"
         echo ""
         ;;
 esac
