@@ -1,0 +1,20 @@
+# ─────────────────────────────────────────────
+# Matrixx-OS Uploader - .gitignore
+# ─────────────────────────────────────────────
+
+# Secrets
+.env
+
+# Logs
+matrixx_upload.log
+*.log
+
+# Temp / system files
+*.tmp
+*.swp
+*~
+.DS_Store
+
+# Optional: editor configs
+.vscode/
+.idea/
