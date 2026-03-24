@@ -121,6 +121,34 @@ delete_file() {
     fi
 }
 
+# ─────────────────────────────────────────────
+# Share (Direct Download Link)
+# ─────────────────────────────────────────────
+get_download_link() {
+    local FILE_PATH="$1"
+
+    RESPONSE=$(curl -s \
+        -u "${NC_USER}:${NC_PASS}" \
+        -X POST \
+        -H "OCS-APIRequest: true" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        "${NC_URL}/ocs/v2.php/apps/files_sharing/api/v1/shares" \
+        --data-urlencode "path=/${FILE_PATH}" \
+        --data "shareType=3" \
+        --data "permissions=1")
+
+    URL=$(echo "$RESPONSE" | grep -o '"url":"[^"]*"' | cut -d'"' -f4)
+
+    if [[ -n "$URL" ]]; then
+        echo "${URL}/download"
+    else
+        echo ""
+    fi
+}
+
+# ─────────────────────────────────────────────
+# Upload
+# ─────────────────────────────────────────────
 upload_file() {
     local FILE="$1"
 
@@ -196,6 +224,16 @@ upload_file() {
     if [[ "$HTTP" == "201" || "$HTTP" == "204" ]]; then
         echo "✅ Upload successful"
         log_action "UPLOAD" "${TARGET_PATH}/${FILENAME}" "SUCCESS"
+
+        echo -n "🔗 Generating download link... "
+        LINK=$(get_download_link "${TARGET_PATH}/${FILENAME}")
+
+        if [[ -n "$LINK" ]]; then
+            echo "OK"
+            echo "📥 Direct Link: $LINK"
+        else
+            echo "FAILED (share API issue)"
+        fi
     else
         echo "❌ Upload failed"
         log_action "UPLOAD" "${TARGET_PATH}/${FILENAME}" "FAILED ($HTTP)"
