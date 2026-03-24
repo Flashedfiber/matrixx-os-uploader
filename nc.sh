@@ -211,7 +211,7 @@ upload_file() {
     echo "   Path   : ${TARGET_PATH}"
     echo "─────────────────────────────────────────"
 
-    HTTP=$(curl -s -# \
+    HTTP=$(curl --progress-bar \
         -u "${NC_USER}:${NC_PASS}" \
         -T "$FILE" \
         -w "%{http_code}" \
@@ -221,8 +221,16 @@ upload_file() {
     echo ""
     echo "HTTP Status: $HTTP"
 
-    if [[ "$HTTP" == "201" || "$HTTP" == "204" ]]; then
-        echo "✅ Upload successful"
+    # ⚠️ Warn if unexpected HTTP
+    if [[ "$HTTP" != "201" && "$HTTP" != "204" ]]; then
+        echo "⚠️ Server returned HTTP $HTTP — verifying upload..."
+    fi
+
+    # ✅ Verify file exists on server
+    FILE_CHECK=$(propfind_status "${TARGET_PATH}/${FILENAME}")
+
+    if [[ "$FILE_CHECK" == "207" ]]; then
+        echo "✅ Upload successful (verified)"
         log_action "UPLOAD" "${TARGET_PATH}/${FILENAME}" "SUCCESS"
 
         echo -n "🔗 Generating download link... "
@@ -235,7 +243,7 @@ upload_file() {
             echo "FAILED (share API issue)"
         fi
     else
-        echo "❌ Upload failed"
+        echo "❌ Upload failed (file not found on server)"
         log_action "UPLOAD" "${TARGET_PATH}/${FILENAME}" "FAILED ($HTTP)"
     fi
 
@@ -250,40 +258,60 @@ upload_file() {
 # ─────────────────────────────────────────────
 CMD="${1:-}"
 
+show_help() {
+    echo ""
+    echo "❌ Invalid or incomplete command"
+    echo ""
+    echo "👉 Available commands:"
+    echo ""
+    echo "  Upload:"
+    echo "    ./nc.sh upload <file>"
+    echo ""
+    echo "  List:"
+    echo "    ./nc.sh list <android> <device>"
+    echo "    ./nc.sh list extras <android> <device>"
+    echo ""
+    echo "  Delete:"
+    echo "    ./nc.sh delete <android> <device> <file>"
+    echo "    ./nc.sh delete extras <android> <device> <file>"
+    echo ""
+    echo "💡 Examples:"
+    echo "  ./nc.sh upload build.zip"
+    echo "  ./nc.sh list A16 lemonadep"
+    echo "  ./nc.sh delete A16 lemonadep old.zip"
+    echo ""
+}
+
 case "$CMD" in
     upload)
         shift
-        upload_file "${1:-}"
+        if [[ -z "${1:-}" ]]; then
+            show_help
+            exit 1
+        fi
+        upload_file "$1"
         ;;
     delete)
         shift
         if [[ "$1" == "extras" ]]; then
+            [[ $# -lt 4 ]] && { show_help; exit 1; }
             delete_file "${BASE_DIR}/$2/$3/extras/$4"
         else
+            [[ $# -lt 3 ]] && { show_help; exit 1; }
             delete_file "${BASE_DIR}/$1/$2/$3"
         fi
         ;;
     list)
         shift
         if [[ "$1" == "extras" ]]; then
+            [[ $# -lt 3 ]] && { show_help; exit 1; }
             list_dir "${BASE_DIR}/$2/$3/extras"
         else
+            [[ $# -lt 2 ]] && { show_help; exit 1; }
             list_dir "${BASE_DIR}/$1/$2"
         fi
         ;;
     *)
-        echo "Matrixx-OS CLI Usage:"
-        echo ""
-        echo "  Upload:"
-        echo "    ./nc.sh upload file.zip"
-        echo ""
-        echo "  List:"
-        echo "    ./nc.sh list A16 device"
-        echo "    ./nc.sh list extras A16 device"
-        echo ""
-        echo "  Delete:"
-        echo "    ./nc.sh delete A16 device file.zip"
-        echo "    ./nc.sh delete extras A16 device file.zip"
-        echo ""
+        show_help
         ;;
 esac
