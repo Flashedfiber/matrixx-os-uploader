@@ -75,8 +75,11 @@ log_action() {
 propfind_status() {
     curl -s -o /dev/null -w "%{http_code}" \
         --connect-timeout 15 \
+        --http1.1 \
         -u "${NC_USER}:${NC_PASS}" \
         -X PROPFIND \
+        -H "Content-Type: application/xml" \
+        -d '<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:displayname/></d:prop></d:propfind>' \
         "${WEBDAV_ROOT}/$1"
 }
 
@@ -88,32 +91,42 @@ mkcol() {
         return 0
     fi
 
-    local HTTP
-    HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+    curl -s -o /dev/null \
         --connect-timeout 15 \
+        --http1.1 \
         -u "${NC_USER}:${NC_PASS}" \
         -X MKCOL \
-        "${WEBDAV_ROOT}/${FOLDER}")
+        "${WEBDAV_ROOT}/${FOLDER}" || true
 
-    # 201 = created, 405 = already exists (both are fine)
-    if [[ "$HTTP" != "201" && "$HTTP" != "405" ]]; then
-        echo "❌ Failed to create folder: ${FOLDER} (HTTP $HTTP)"
+    # Verify folder actually exists regardless of what HTTP code MKCOL returned
+    local VERIFY
+    VERIFY=$(propfind_status "$FOLDER")
+    if [[ "$VERIFY" != "207" ]]; then
+        echo "❌ Failed to create folder: ${FOLDER} (PROPFIND returned $VERIFY)"
         exit 1
     fi
 }
 
 ensure_dir() {
     local DIR_PATH="$1"
-    local STATUS
-    STATUS=$(propfind_status "$DIR_PATH")
+    local PARTS=()
+    local CURRENT=""
 
-    if [[ "$STATUS" == "404" ]]; then
-        mkcol "$DIR_PATH"
-        echo "[OK] Created folder: ${DIR_PATH}"
-    elif [[ "$STATUS" != "207" ]]; then
-        echo "❌ Cannot access folder: ${DIR_PATH} (HTTP $STATUS)"
-        exit 1
-    fi
+    # Split path into components and ensure each one exists top-down
+    IFS='/' read -ra PARTS <<< "$DIR_PATH"
+    for PART in "${PARTS[@]}"; do
+        [[ -z "$PART" ]] && continue
+        CURRENT="${CURRENT:+${CURRENT}/}${PART}"
+        local STATUS
+        STATUS=$(propfind_status "$CURRENT")
+        if [[ "$STATUS" == "404" ]]; then
+            mkcol "$CURRENT"
+            echo "[OK] Created folder: ${CURRENT}"
+        elif [[ "$STATUS" != "207" ]]; then
+            echo "❌ Cannot access folder: ${CURRENT} (HTTP $STATUS)"
+            exit 1
+        fi
+    done
 }
 
 ensure_extras_folder() {
@@ -136,10 +149,14 @@ list_dir() {
 
     curl -s -u "${NC_USER}:${NC_PASS}" \
         --connect-timeout 15 \
+        --http1.1 \
         -X PROPFIND \
+        -H "Depth: 1" \
+        -H "Content-Type: application/xml" \
+        -d '<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:displayname/></d:prop></d:propfind>' \
         "${WEBDAV_ROOT}/${DIR}" \
-        | grep -i "<[^:>]*:displayname>" \
-        | sed 's/.*<[^>]*>//;s/<\/[^>]*//' \
+        | grep -o '<d:displayname>[^<]*</d:displayname>' \
+        | sed 's/<d:displayname>//;s/<\/d:displayname>//' \
         | tail -n +2  # skip parent dir entry
 
     echo ""
@@ -210,76 +227,74 @@ move_file() {
 # ─────────────────────────────────────────────
 # Share (Direct Download Link)
 # ─────────────────────────────────────────────
+
+
 get_download_link() {
     local FILE_PATH="$1"
 
+    # Extract URL from XML response
+    _extract_url() {
+        echo "$1" | grep -oP '(?<=<url>).*?(?=</url>)'
+    }
+
+    # Create share
     local RESPONSE
     RESPONSE=$(curl -s \
         --connect-timeout 15 \
         -u "${NC_USER}:${NC_PASS}" \
         -X POST \
         -H "OCS-APIRequest: true" \
-        -H "Content-Type: application/x-www-form-urlencoded" \
         "${NC_URL}/ocs/v2.php/apps/files_sharing/api/v1/shares" \
         --data-urlencode "path=/${FILE_PATH}" \
         --data "shareType=3" \
         --data "permissions=1")
 
-    # Try python3 JSON parse first, fall back to grep
     local URL
-    URL=$(echo "$RESPONSE" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    print(d['ocs']['data']['url'])
-except Exception:
-    pass
-" 2>/dev/null)
+    URL=$(_extract_url "$RESPONSE")
 
-    # Fallback grep if python3 not available or parse failed
+    # If share already exists → fetch it
     if [[ -z "$URL" ]]; then
-        URL=$(echo "$RESPONSE" | grep -o '"url":"[^"]*"' | cut -d'"' -f4)
+        local EXISTING
+        EXISTING=$(curl -s \
+            --connect-timeout 15 \
+            -u "${NC_USER}:${NC_PASS}" \
+            -X GET \
+            -H "OCS-APIRequest: true" \
+            "${NC_URL}/ocs/v2.php/apps/files_sharing/api/v1/shares?path=/${FILE_PATH}&reshares=false")
+
+        URL=$(_extract_url "$EXISTING")
     fi
 
-    if [[ -n "$URL" ]]; then
-        echo "${URL}/download"
-    else
-        echo ""
-    fi
+    # Return clean download link
+    [[ -n "$URL" ]] && echo "${URL}" || echo ""
 }
 
+
 # ─────────────────────────────────────────────
-# Upload with retry
+# Upload
 # ─────────────────────────────────────────────
-upload_with_retry() {
+do_upload() {
     local TARGET="$1"
     local FILE="$2"
+    local TMP_HTTP
+    TMP_HTTP=$(mktemp)
 
-    local MAX_ATTEMPTS=3
-    local DELAY=5
-    local HTTP=""
+    # curl writes progress bar to stderr → stays on terminal
+    # -o /dev/null discards response body → no XML error leaking
+    # -w "%{http_code}" goes to stdout → captured into tmpfile
+    curl --progress-bar \
+        --connect-timeout 30 \
+        -u "${NC_USER}:${NC_PASS}" \
+        -T "$FILE" \
+        -o /dev/null \
+        -w "%{http_code}" \
+        "$TARGET" > "$TMP_HTTP" || true
 
-    for ((i=1; i<=MAX_ATTEMPTS; i++)); do
-        echo "   Attempt ${i}/${MAX_ATTEMPTS}..."
-        HTTP=$(curl --progress-bar \
-            --connect-timeout 30 \
-            -u "${NC_USER}:${NC_PASS}" \
-            -T "$FILE" \
-            -w "%{http_code}" \
-            -o /dev/null \
-            "$TARGET")
-
-        if [[ "$HTTP" == "201" || "$HTTP" == "204" ]]; then
-            echo "$HTTP"
-            return 0
-        fi
-
-        echo "   ⚠️ Attempt ${i} failed (HTTP $HTTP)"
-        (( i < MAX_ATTEMPTS )) && echo "   Retrying in ${DELAY}s..." && sleep "$DELAY"
-    done
-
+    echo ""
+    local HTTP
+    HTTP=$(cat "$TMP_HTTP")
+    rm -f "$TMP_HTTP"
     echo "$HTTP"
-    return 1
 }
 
 # ─────────────────────────────────────────────
@@ -296,8 +311,33 @@ upload_file() {
     local FILE_SIZE
     FILE_SIZE=$(du -sh "$FILE" | cut -f1)
 
+    echo "Fetching available Android versions..."
+    local OPTIONS=()
+    local RAW_VERSIONS
+    RAW_VERSIONS=$(curl -s \
+        --connect-timeout 15 \
+        --http1.1 \
+        -u "${NC_USER}:${NC_PASS}" \
+        -X PROPFIND \
+        -H "Depth: 1" \
+        -H "Content-Type: application/xml" \
+        -d '<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:displayname/></d:prop></d:propfind>' \
+        "${WEBDAV_ROOT}/${BASE_DIR}")
+
+    while IFS= read -r line; do
+        [[ -n "$line" && "$line" != "${BASE_DIR}" && "$line" != "$(basename "$BASE_DIR")" ]] && OPTIONS+=("$line")
+    done < <(echo "$RAW_VERSIONS" \
+        | grep -o '<d:displayname>[^<]*</d:displayname>' \
+        | sed 's/<d:displayname>//;s/<\/d:displayname>//' \
+        | tail -n +2)
+
+    if [[ ${#OPTIONS[@]} -eq 0 ]]; then
+        echo "❌ No Android version folders found in ${BASE_DIR}"
+        exit 1
+    fi
+
+    echo ""
     echo "Select Android version:"
-    local OPTIONS=("A16")
     for i in "${!OPTIONS[@]}"; do
         echo "  $((i+1))) ${OPTIONS[$i]}"
     done
@@ -311,8 +351,6 @@ upload_file() {
     local ANDROID="${OPTIONS[$((CHOICE-1))]}"
     local ANDROID_PATH="${BASE_DIR}/${ANDROID}"
 
-    ensure_dir "$ANDROID_PATH"
-
     echo ""
     read -rp "Device name (e.g. lemonadep): " DEVICE
 
@@ -322,6 +360,12 @@ upload_file() {
     fi
 
     local DEVICE_PATH="${ANDROID_PATH}/${DEVICE}"
+
+    echo ""
+    echo "  Android : ${ANDROID}"
+    echo "  Device  : ${DEVICE}"
+    read -rp "Confirm? [y/N]: " CONFIRM_DEVICE
+    [[ "$CONFIRM_DEVICE" != "y" ]] && { echo "❌ Cancelled."; exit 1; }
     ensure_dir "$DEVICE_PATH"
     ensure_extras_folder "$DEVICE_PATH"
 
@@ -355,10 +399,9 @@ upload_file() {
     fi
 
     local HTTP
-    HTTP=$(upload_with_retry "$TARGET" "$FILE") || true
+    HTTP=$(do_upload "$TARGET" "$FILE")
 
     echo ""
-    echo "HTTP Status: $HTTP"
 
     # Verify file exists on server
     local FILE_CHECK
@@ -381,7 +424,7 @@ upload_file() {
             echo "FAILED (share API issue)"
         fi
     else
-        echo "❌ Upload failed (file not found on server after ${MAX_ATTEMPTS:-3} attempts)"
+        echo "❌ Upload failed (file not found on server)"
         log_action "UPLOAD" "${TARGET_PATH}/${FILENAME}" "FAILED ($HTTP)"
         exit 1
     fi
@@ -410,6 +453,9 @@ show_help() {
     echo ""
     echo "👉 Available commands:"
     echo ""
+    echo "  Versions:"
+    echo "    ./nc.sh versions"
+    echo ""
     echo "  Upload:"
     echo "    ./nc.sh upload <file>"
     echo ""
@@ -435,6 +481,25 @@ show_help() {
 }
 
 case "$CMD" in
+    versions)
+        list_dir "$BASE_DIR"
+        ;;
+    versions-debug)
+        source .env 2>/dev/null || true
+        WEBDAV_ROOT_DBG="${NC_URL}/remote.php/dav/files/${NC_USER}"
+        echo "Raw PROPFIND output for ${BASE_DIR}:"
+        curl -s \
+            --connect-timeout 15 \
+            --http1.1 \
+            -u "${NC_USER}:${NC_PASS}" \
+            -X PROPFIND \
+            -H "Depth: 1" \
+            -H "Content-Type: application/xml" \
+            -d '<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:displayname/></d:prop></d:propfind>' \
+            "${WEBDAV_ROOT_DBG}/${BASE_DIR}" \
+            | grep -o '<d:displayname>[^<]*</d:displayname>' \
+            | sed 's/<d:displayname>//;s/<\/d:displayname>//'
+        ;;
     upload)
         shift
         if [[ -z "${1:-}" ]]; then
