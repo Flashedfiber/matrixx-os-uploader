@@ -303,12 +303,17 @@ case "$CMD" in
         ;;
     list)
         shift
-        if [[ "$1" == "extras" ]]; then
-            [[ $# -lt 3 ]] && { show_help; exit 1; }
-            list_dir "${BASE_DIR}/$2/$3/extras"
+
+        MODE="${1:-}"
+        ANDROID="${2:-}"
+        DEVICE="${3:-}"
+
+        if [[ "$MODE" == "extras" ]]; then
+            [[ -z "$ANDROID" || -z "$DEVICE" ]] && { show_help; exit 1; }
+            list_dir "${BASE_DIR}/${ANDROID}/${DEVICE}/extras"
         else
-            [[ $# -lt 2 ]] && { show_help; exit 1; }
-            list_dir "${BASE_DIR}/$1/$2"
+            [[ -z "$MODE" || -z "$ANDROID" ]] && { show_help; exit 1; }
+            list_dir "${BASE_DIR}/${MODE}/${ANDROID}"
         fi
         ;;
     *)
