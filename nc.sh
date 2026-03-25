@@ -70,6 +70,78 @@ log_action() {
 }
 
 # ─────────────────────────────────────────────
+# Cache
+# ─────────────────────────────────────────────
+CACHE_FILE="matrixx_upload_cache.json"
+
+cache_init() {
+    [[ -f "$CACHE_FILE" ]] || echo "[]" > "$CACHE_FILE"
+}
+
+cache_add() {
+    local FILE="$1"
+    local TARGET_PATH="$2"
+    local LINK="$3"
+
+    local FILENAME SIZE_BYTES SIZE_HUMAN DATE_ISO MD5 SHA256
+
+    FILENAME="$(basename "$FILE")"
+    SIZE_BYTES=$(stat -c '%s' "$FILE")
+    SIZE_HUMAN=$(du -sh "$FILE" | cut -f1)
+    DATE_ISO=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+    echo -n "🔐 Computing MD5...    "
+    MD5=$(md5sum "$FILE" | cut -d' ' -f1)
+    echo "$MD5"
+
+    echo -n "🔐 Computing SHA256... "
+    SHA256=$(sha256sum "$FILE" | cut -d' ' -f1)
+    echo "$SHA256"
+
+    local ENTRY
+    ENTRY=$(jq -n \
+        --arg filename "$FILENAME" \
+        --arg remote_path "${TARGET_PATH}/${FILENAME}" \
+        --arg android "$(echo "$TARGET_PATH" | cut -d'/' -f2)" \
+        --arg device "$(echo "$TARGET_PATH" | cut -d'/' -f3)" \
+        --arg size_bytes "$SIZE_BYTES" \
+        --arg size_human "$SIZE_HUMAN" \
+        --arg md5 "$MD5" \
+        --arg sha256 "$SHA256" \
+        --arg link "$LINK" \
+        --arg uploaded_at "$DATE_ISO" \
+        --arg nc_user "$NC_USER" \
+        '{
+            filename: $filename,
+            remote_path: $remote_path,
+            android: $android,
+            device: $device,
+            size_bytes: ($size_bytes | tonumber),
+            size_human: $size_human,
+            md5: $md5,
+            sha256: $sha256,
+            download_link: $link,
+            uploaded_at: $uploaded_at,
+            uploaded_by: $nc_user
+        }')
+
+    # Append to JSON array
+    local TMP
+    TMP=$(mktemp)
+    jq --argjson entry "$ENTRY" '. += [$entry]' "$CACHE_FILE" > "$TMP" && mv "$TMP" "$CACHE_FILE"
+
+    echo "✅ Cached to ${CACHE_FILE}"
+}
+
+cache_show() {
+    [[ ! -f "$CACHE_FILE" ]] && { echo "❌ No cache file found."; return 1; }
+    echo ""
+    echo "📦 Upload Cache (${CACHE_FILE})"
+    echo "────────────────────────────────────────────"
+    jq -r '.[] | "[\(.uploaded_at)] \(.filename)\n  Android : \(.android)\n  Device  : \(.device)\n  Size    : \(.size_human)\n  MD5     : \(.md5)\n  SHA256  : \(.sha256)\n  Link    : \(.download_link)\n"' "$CACHE_FILE"
+}
+
+# ─────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────
 propfind_status() {
@@ -269,6 +341,47 @@ get_download_link() {
     [[ -n "$URL" ]] && echo "${URL}" || echo ""
 }
 
+get_folder_link() {
+    local FOLDER_PATH="$1"
+
+    _extract_url() {
+        echo "$1" | grep -oP '(?<=<url>).*?(?=</url>)'
+    }
+
+    # 🔹 Step 1: Check existing shares FIRST
+    local EXISTING
+    EXISTING=$(curl -s \
+        --connect-timeout 15 \
+        -u "${NC_USER}:${NC_PASS}" \
+        -X GET \
+        -H "OCS-APIRequest: true" \
+        "${NC_URL}/ocs/v2.php/apps/files_sharing/api/v1/shares?path=/${FOLDER_PATH}&reshares=false")
+
+    local URL
+    URL=$(_extract_url "$EXISTING")
+
+    # 🔹 Step 2: If found → reuse it
+    if [[ -n "$URL" ]]; then
+        echo "$URL"
+        return
+    fi
+
+    # 🔹 Step 3: Otherwise create new share
+    local RESPONSE
+    RESPONSE=$(curl -s \
+        --connect-timeout 15 \
+        -u "${NC_USER}:${NC_PASS}" \
+        -X POST \
+        -H "OCS-APIRequest: true" \
+        "${NC_URL}/ocs/v2.php/apps/files_sharing/api/v1/shares" \
+        --data-urlencode "path=/${FOLDER_PATH}" \
+        --data "shareType=3" \
+        --data "permissions=1")
+
+    URL=$(_extract_url "$RESPONSE")
+
+    echo "$URL"
+}
 
 # ─────────────────────────────────────────────
 # Upload
@@ -284,6 +397,7 @@ do_upload() {
     # -w "%{http_code}" goes to stdout → captured into tmpfile
     curl --progress-bar \
         --connect-timeout 30 \
+        --http1.1 \
         -u "${NC_USER}:${NC_PASS}" \
         -T "$FILE" \
         -o /dev/null \
@@ -407,13 +521,18 @@ upload_file() {
     local FILE_CHECK
     FILE_CHECK=$(propfind_status "${TARGET_PATH}/${FILENAME}")
 
-    if [[ "$FILE_CHECK" == "207" ]]; then
+   if [[ "$FILE_CHECK" == "207" ]]; then
         echo "✅ Upload successful (verified)"
         log_action "UPLOAD" "${TARGET_PATH}/${FILENAME}" "SUCCESS"
 
         echo -n "🔗 Generating download link... "
+
         local LINK
-        LINK=$(get_download_link "${TARGET_PATH}/${FILENAME}")
+        if [[ "$TYPE" == "2" ]]; then
+            LINK=$(get_folder_link "${TARGET_PATH}")
+        else
+            LINK=$(get_download_link "${TARGET_PATH}/${FILENAME}")
+        fi
 
         if [[ -n "$LINK" ]]; then
             echo "OK"
@@ -422,6 +541,13 @@ upload_file() {
             echo "   ${LINK}"
         else
             echo "FAILED (share API issue)"
+            LINK=""
+        fi
+
+        # Only cache ROM uploads (not extras)
+        if [[ "$TYPE" != "2" ]]; then
+            cache_init
+            cache_add "$FILE" "$TARGET_PATH" "$LINK"
         fi
     else
         echo "❌ Upload failed (file not found on server)"
@@ -477,6 +603,9 @@ show_help() {
     echo "  ./nc.sh delete A16 lemonadep old.zip"
     echo "  ./nc.sh move A16 lemonadep old.zip new.zip"
     echo "  ./nc.sh --dry-run upload build.zip"
+    echo ""
+    echo "  Cache:"
+    echo "    ./nc.sh cache"
     echo ""
 }
 
@@ -537,6 +666,9 @@ case "$CMD" in
             [[ $# -lt 4 ]] && { show_help; exit 1; }
             move_file "${BASE_DIR}/$1/$2/$3" "${BASE_DIR}/$1/$2/$4"
         fi
+        ;;
+    cache)
+        cache_show
         ;;
     *)
         show_help

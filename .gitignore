@@ -18,3 +18,4 @@ matrixx_upload.log
 # Optional: editor configs
 .vscode/
 .idea/
+matrix_upload_cache.json
