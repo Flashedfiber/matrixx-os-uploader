@@ -254,8 +254,6 @@ except Exception:
 upload_with_retry() {
     local TARGET="$1"
     local FILE="$2"
-    local LOCAL_MD5
-    LOCAL_MD5=$(md5sum "$FILE" | cut -d' ' -f1)
 
     local MAX_ATTEMPTS=3
     local DELAY=5
@@ -266,7 +264,6 @@ upload_with_retry() {
         HTTP=$(curl --progress-bar \
             --connect-timeout 30 \
             -u "${NC_USER}:${NC_PASS}" \
-            -H "OC-Checksum: MD5:${LOCAL_MD5}" \
             -T "$FILE" \
             -w "%{http_code}" \
             -o /dev/null \
