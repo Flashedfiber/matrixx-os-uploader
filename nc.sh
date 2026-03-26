@@ -29,9 +29,42 @@ if [[ -f .env ]]; then
 fi
 
 # ─────────────────────────────────────────────
+# Simple Banner (Minimal Branding)
+# ─────────────────────────────────────────────
+
+RESET="\033[0m"
+BOLD="\033[1m"
+GREEN="\033[38;5;46m"
+CYAN="\033[38;5;51m"
+GRAY="\033[38;5;240m"
+YELLOW="\033[38;5;220m"
+
+_matrixx_banner() {
+    echo ""
+    echo -e "${GREEN}${BOLD}========================================${RESET}"
+    echo -e "${GREEN}${BOLD}        🚀 PROJECT MATRIXX 🚀         ${RESET}"
+    echo -e "${GREEN}${BOLD}========================================${RESET}"
+    echo ""
+
+    echo -e "${GRAY}Server:${RESET} ${CYAN}${NC_URL}${RESET}"
+    echo -e "${GRAY}Base Dir:${RESET} ${CYAN}${BASE_DIR}${RESET}"
+
+    if [[ -n "${NC_USER:-}" ]]; then
+        echo -e "${GRAY}User:${RESET} ${CYAN}${NC_USER}${RESET}"
+    fi
+
+    [[ $DRY_RUN -eq 1 ]] && \
+        echo -e "${GRAY}Mode:${RESET} ${YELLOW}DRY-RUN${RESET}"
+
+    echo -e "${GRAY}Time:${RESET} ${CYAN}$(date '+%Y-%m-%d %H:%M:%S')${RESET}"
+    echo ""
+}
+
+# ─────────────────────────────────────────────
 # Validate environment
 # ─────────────────────────────────────────────
 if [[ -z "${NC_USER:-}" || -z "${NC_PASS:-}" ]]; then
+    _matrixx_banner
     echo ""
     echo "❌ Matrixx-OS Uploader: Missing credentials!"
     echo ""
@@ -46,14 +79,10 @@ if [[ -z "${NC_USER:-}" || -z "${NC_PASS:-}" ]]; then
     exit 1
 fi
 
-echo ""
-echo "┌─────────────────────────────────────────┐"
-echo "│        Matrixx-OS Upload Utility        │"
-echo "└─────────────────────────────────────────┘"
-echo "[INFO] Logged in as: ${NC_USER}"
-echo "[INFO] Server:       ${NC_URL}"
-[[ $DRY_RUN -eq 1 ]] && echo "[INFO] Mode:         DRY-RUN (no changes will be made)"
-echo ""
+# ─────────────────────────────────────────────
+# Show banner on execution
+# ─────────────────────────────────────────────
+_matrixx_banner
 
 WEBDAV_ROOT="${NC_URL}/remote.php/dav/files/${NC_USER}"
 
