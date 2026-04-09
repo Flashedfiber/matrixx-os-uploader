@@ -1,14 +1,14 @@
 # Matrixx-OS Nextcloud CLI Uploader
 
-A secure, team-friendly CLI tool to upload, list, and delete Matrixx-OS builds on Nextcloud.
+A secure, team-friendly CLI tool to upload, list, and delete Custom Rom builds on Nextcloud.
 
 ---
 
 ## 🚀 Quick Start
 
 ```bash
-git clone https://github.com/your-org/matrixx-os-uploader.git
-cd matrixx-os-uploader
+git clone https://github.com/Flashedfiber/automated-nextcloud-uploader.git
+cd to target directory
 ./setup.sh
 ```
 
@@ -85,7 +85,7 @@ NC_PASS=your_app_password
 ## 📁 Folder Structure
 
 ```
-Matrixx-OS/
+Lunaris-AOSP/
 └── A16/
     └── <device>/
         ├── extras/
@@ -101,19 +101,19 @@ Matrixx-OS/
 All actions are logged in:
 
 ```bash
-matrixx_upload.log
+"device".log
 ```
 
 ### View logs:
 
 ```bash
-cat matrixx_upload.log
+cat "device".log
 ```
 
 ### Live logs:
 
 ```bash
-tail -f matrixx_upload.log
+tail -f "device".log
 ```
 
 ---
