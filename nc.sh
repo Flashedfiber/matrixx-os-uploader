@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 
 # ─────────────────────────────────────────────
-#        Matrixx-OS Nextcloud CLI Tool
+#        Lunaris-AOSP Nextcloud CLI Tool
 # ─────────────────────────────────────────────
 
 NC_URL="https://files.dataheaven.space"
-BASE_DIR="Matrixx-OS"
+BASE_DIR="Lunaris-AOSP"
 DRY_RUN=0
 
 set -euo pipefail
@@ -39,10 +39,10 @@ CYAN="\033[38;5;51m"
 GRAY="\033[38;5;240m"
 YELLOW="\033[38;5;220m"
 
-_matrixx_banner() {
+_lunaris_banner() {
     echo ""
     echo -e "${GREEN}${BOLD}========================================${RESET}"
-    echo -e "${GREEN}${BOLD}        🚀 PROJECT MATRIXX 🚀         ${RESET}"
+    echo -e "${GREEN}${BOLD}    🚀 Lunaris-AOSP for OP9 Series 🚀   ${RESET}"
     echo -e "${GREEN}${BOLD}========================================${RESET}"
     echo ""
 
@@ -64,9 +64,9 @@ _matrixx_banner() {
 # Validate environment
 # ─────────────────────────────────────────────
 if [[ -z "${NC_USER:-}" || -z "${NC_PASS:-}" ]]; then
-    _matrixx_banner
+    _lunaris_banner
     echo ""
-    echo "❌ Matrixx-OS Uploader: Missing credentials!"
+    echo "❌ Lunaris-AOSP Uploader: Missing credentials!"
     echo ""
     echo "👉 Option 1 (recommended):"
     echo "   Create .env file:"
@@ -82,14 +82,14 @@ fi
 # ─────────────────────────────────────────────
 # Show banner on execution
 # ─────────────────────────────────────────────
-_matrixx_banner
+_lunaris_banner
 
 WEBDAV_ROOT="${NC_URL}/remote.php/dav/files/${NC_USER}"
 
 # ─────────────────────────────────────────────
 # Logging
 # ─────────────────────────────────────────────
-LOG_FILE="matrixx_upload.log"
+LOG_FILE="lunaris_upload.log"
 
 log_action() {
     local ACTION="$1"
@@ -99,25 +99,29 @@ log_action() {
 }
 
 # ─────────────────────────────────────────────
-# Cache
+# Cache (OTA Formatted)
 # ─────────────────────────────────────────────
-CACHE_FILE="matrixx_upload_cache.json"
 
 cache_init() {
-    [[ -f "$CACHE_FILE" ]] || echo "[]" > "$CACHE_FILE"
+    local CACHE_FILE="$1"
+    # Always create new file and overwrite anything that existed
+    echo '{"response": []}' > "$CACHE_FILE"
+    echo "⚠️ Initialized fresh OTA cache: ${CACHE_FILE}"
 }
 
 cache_add() {
     local FILE="$1"
     local TARGET_PATH="$2"
     local LINK="$3"
+    local CACHE_FILE="$4"
+    local DEVICE="$5"
 
-    local FILENAME SIZE_BYTES SIZE_HUMAN DATE_ISO MD5 SHA256
+    local FILENAME SIZE_BYTES TIMESTAMP_EPOCH MD5 SHA256
 
     FILENAME="$(basename "$FILE")"
     SIZE_BYTES=$(stat -c '%s' "$FILE")
-    SIZE_HUMAN=$(du -sh "$FILE" | cut -f1)
-    DATE_ISO=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+    # OTA services typically require timestamps in UNIX epoch format
+    TIMESTAMP_EPOCH=$(date +%s)
 
     echo -n "🔐 Computing MD5...    "
     MD5=$(md5sum "$FILE" | cut -d' ' -f1)
@@ -127,47 +131,64 @@ cache_add() {
     SHA256=$(sha256sum "$FILE" | cut -d' ' -f1)
     echo "$SHA256"
 
+    # Generate the strict OTA JSON schema dynamically
     local ENTRY
     ENTRY=$(jq -n \
         --arg filename "$FILENAME" \
-        --arg remote_path "${TARGET_PATH}/${FILENAME}" \
-        --arg android "$(echo "$TARGET_PATH" | cut -d'/' -f2)" \
-        --arg device "$(echo "$TARGET_PATH" | cut -d'/' -f3)" \
-        --arg size_bytes "$SIZE_BYTES" \
-        --arg size_human "$SIZE_HUMAN" \
+        --arg download "$LINK" \
+        --arg timestamp "$TIMESTAMP_EPOCH" \
         --arg md5 "$MD5" \
         --arg sha256 "$SHA256" \
-        --arg link "$LINK" \
-        --arg uploaded_at "$DATE_ISO" \
-        --arg nc_user "$NC_USER" \
+        --arg size "$SIZE_BYTES" \
+        --arg device "$DEVICE" \
         '{
-            filename: $filename,
-            remote_path: $remote_path,
-            android: $android,
+            maintainer: "flashedfiber",
+            oem: "oneplus",
             device: $device,
-            size_bytes: ($size_bytes | tonumber),
-            size_human: $size_human,
+            filename: $filename,
+            download: $download,
+            timestamp: ($timestamp | tonumber),
             md5: $md5,
             sha256: $sha256,
-            download_link: $link,
-            uploaded_at: $uploaded_at,
-            uploaded_by: $nc_user
+            size: ($size | tonumber),
+            version: "",
+            buildtype: "",
+            forum: "",
+            gapps: "",
+            firmware: "",
+            modem: "",
+            bootloader: "",
+            recovery: "",
+            paypal: "",
+            telegram: "",
+            dt: "",
+            "common-dt": "",
+            kernel: ""
         }')
 
-    # Append to JSON array
+    # Append the new entry to the .response array
     local TMP
     TMP=$(mktemp)
-    jq --argjson entry "$ENTRY" '. += [$entry]' "$CACHE_FILE" > "$TMP" && mv "$TMP" "$CACHE_FILE"
+    jq --argjson entry "$ENTRY" '.response += [$entry]' "$CACHE_FILE" > "$TMP" && mv "$TMP" "$CACHE_FILE"
 
-    echo "✅ Cached to ${CACHE_FILE}"
+    echo "✅ Cached to ${CACHE_FILE} (OTA Format)"
 }
 
 cache_show() {
-    [[ ! -f "$CACHE_FILE" ]] && { echo "❌ No cache file found."; return 1; }
+    local DEVICE="$1"
+    
+    if [[ -z "$DEVICE" ]]; then
+        echo "❌ Please specify the device codename to view its cache (e.g., ./nc.sh cache lemonadep)"
+        return 1
+    fi
+
+    local CACHE_FILE="${DEVICE}.json"
+
+    [[ ! -f "$CACHE_FILE" ]] && { echo "❌ No cache file found for ${DEVICE} (${CACHE_FILE})."; return 1; }
     echo ""
     echo "📦 Upload Cache (${CACHE_FILE})"
     echo "────────────────────────────────────────────"
-    jq -r '.[] | "[\(.uploaded_at)] \(.filename)\n  Android : \(.android)\n  Device  : \(.device)\n  Size    : \(.size_human)\n  MD5     : \(.md5)\n  SHA256  : \(.sha256)\n  Link    : \(.download_link)\n"' "$CACHE_FILE"
+    jq -r '.response[] | "[\(.timestamp)] \(.filename)\n  Device  : \(.device)\n  Size    : \(.size) bytes\n  MD5     : \(.md5)\n  SHA256  : \(.sha256)\n  Link    : \(.download)\n"' "$CACHE_FILE"
 }
 
 # ─────────────────────────────────────────────
@@ -329,7 +350,6 @@ move_file() {
 # Share (Direct Download Link)
 # ─────────────────────────────────────────────
 
-
 get_download_link() {
     local FILE_PATH="$1"
 
@@ -367,7 +387,7 @@ get_download_link() {
     fi
 
     # Return clean download link
-    [[ -n "$URL" ]] && echo "${URL}" || echo ""
+    [[ -n "$URL" ]] && echo "${URL}/download" || echo ""
 }
 
 get_folder_link() {
@@ -413,7 +433,7 @@ get_folder_link() {
 }
 
 # ─────────────────────────────────────────────
-# Upload
+# Upload Executer
 # ─────────────────────────────────────────────
 do_upload() {
     local TARGET="$1"
@@ -441,7 +461,7 @@ do_upload() {
 }
 
 # ─────────────────────────────────────────────
-# Upload
+# Interactive Upload 
 # ─────────────────────────────────────────────
 upload_file() {
     local FILE="$1"
@@ -575,8 +595,9 @@ upload_file() {
 
         # Only cache ROM uploads (not extras)
         if [[ "$TYPE" != "2" ]]; then
-            cache_init
-            cache_add "$FILE" "$TARGET_PATH" "$LINK"
+            local CACHE_FILE="${DEVICE}.json"
+            cache_init "$CACHE_FILE"
+            cache_add "$FILE" "$TARGET_PATH" "$LINK" "$CACHE_FILE" "$DEVICE"
         fi
     else
         echo "❌ Upload failed (file not found on server)"
@@ -634,7 +655,7 @@ show_help() {
     echo "  ./nc.sh --dry-run upload build.zip"
     echo ""
     echo "  Cache:"
-    echo "    ./nc.sh cache"
+    echo "    ./nc.sh cache <device>"
     echo ""
 }
 
@@ -697,7 +718,7 @@ case "$CMD" in
         fi
         ;;
     cache)
-        cache_show
+        cache_show "${2:-}"
         ;;
     *)
         show_help
